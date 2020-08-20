@@ -380,9 +380,9 @@ def getFast5Info(moptions, sp_param):
 
     if sp_param['f5status'] == "":
         fq_data = (fq_data.decode(encoding="utf-8")).split('\n')
-        sp_param['read_id'] = (fq_data[0][1:] if fq_data[0][0] == '@' else fq_data[0]).replace(" ", ":::").replace("\t",
-                                                                                                                   "|||")
-
+        # sp_param['read_id'] = (fq_data[0][1:] if fq_data[0][0] == '@' else fq_data[0]).replace(" ", ":::").replace("\t",
+        #                                                                                                            "|||")
+        sp_param["read_id"] = (fq_data[0][1:] if fq_data[0][0] == '@' else fq_data[0]).split()[0]
     # get raw signals
     getRawInfo(moptions, sp_param)
     # get events
@@ -461,7 +461,28 @@ def get_Event_Signals(moptions, sp_options, f5files):
         end_time = time.time();
         print("All consuming time %d" % (end_time - start_time))
 
-    return f5data;
+    return f5data
+
+
+def multi_fast5_pipeline_wrapper(data_file, arguments):
+   """wrap DeepModPipeline into a single function call for ease of multiprocessing"""
+   dmp = DeepModPipeline(data_file, arguments["n_threads"], create_dot_dict(arguments), s3=arguments["s3"])
+   dmp.run(delete=arguments["delete_signal_data"], debug=arguments["debug"])
+   return True
+
+
+def multiprocess_deepmod_pipeline(wrapper, data_files, args):
+   """Multiprocess deepmod pipeline
+   :param wrapper: the deepmod pipeline wrapper to do the work
+   :param data_files: files to multiprocess
+   :param args: set of config arguments
+   :return: output
+   """
+   service = BasicService(wrapper)
+   arguments = merge_dicts([args, {"n_threads": max(1, args.n_threads // 4)}])
+   total, failure, messages, output = run_service(service.run, data_files, {"arguments": arguments},
+                                                  ["data_file"], 4)
+   return output
 
 
 #
@@ -473,56 +494,64 @@ def mDetect1(moptions, sp_options, f5files):
 
     if moptions['outLevel'] <= myCom.OUTPUT_DEBUG: start_time = time.time();
     # for fa files of base sequences from events
-    temp_fa = tempfile.NamedTemporaryFile(suffix='.fa', mode='w')
-    f5keys = sorted(f5data.keys());  # f5keys.sort()
-    for f5k in f5keys:
-        temp_fa.write(''.join(['>', f5k, '\n', f5data[f5k][0], '\n']))
-    temp_fa.flush();
-    if moptions['outLevel'] <= myCom.OUTPUT_DEBUG:
-        end_time = time.time();
-        print("Write consuming time %d" % (end_time - start_time))
+    f5keys = sorted(f5data.keys())  # f5keys.sort()
+    # f5keys = sorted([x.split(":::")[0] for x in f5data.keys()])  # f5keys.sort()
 
-    # run alignmen tools of bwa-mem or minimap2
-    temp_sam = tempfile.NamedTemporaryFile()
-    if moptions['alignStr'] == 'bwa':
-        cmd_opt = ['mem', '-x', 'ont2d', '-v', '1', '-t', '1', moptions['Ref'], temp_fa.name]
+    if moptions["bam"] is not None and False:
+        align_info = get_subset_of_bam(moptions["bam"], f5keys)
     else:
-        cmd_opt = ['-ax', 'map-ont', moptions['Ref'], temp_fa.name]
-    returncode = subprocess.call([moptions['alignStr'], ] + cmd_opt, stdout=temp_sam)
-    if not returncode == 0:
-        print('Fatal Error!!! returncode is non-zero(%d) for "%s"' % (returncode, curcmd))
-        errkey = "Cannot running aligment"
+        temp_fa = "/Users/andrewbailey/CLionProjects/modification_detection_pipeline/submodules/DeepMod/tests/deepmod.fa"
+        temp_fa = open(temp_fa, "w")
+        # temp_fa = tempfile.NamedTemporaryFile(suffix='.fa', mode='w')
         for f5k in f5keys:
-            sp_options["Error"][errkey].append(f5data[f5k][3])
-        return;
+            temp_fa.write(''.join(['>', f5k, '\n', f5data[f5k][0], '\n']))
+        temp_fa.flush()
+        temp_fa.close()
+        if moptions['outLevel'] <= myCom.OUTPUT_DEBUG:
+            end_time = time.time()
+            print("Write consuming time %d" % (end_time - start_time))
 
-    temp_fa.close();
-    temp_sam.seek(0);
-    # get content from aligned results
-    align_info = temp_sam.readlines()
-    align_info = [str(align_info[i], 'utf-8').strip() for i in range(len(align_info))]
-    temp_sam.close();
+        # run alignmen tools of bwa-mem or minimap2
+        temp_sam = tempfile.NamedTemporaryFile()
+        if moptions['alignStr'] == 'bwa':
+            cmd_opt = ['mem', '-x', 'ont2d', '-v', '1', '-t', '1', moptions['Ref'], temp_fa.name]
+        else:
+            cmd_opt = ['-ax', 'map-ont', moptions['Ref'], temp_fa.name]
+        returncode = subprocess.call([moptions['alignStr'], ] + cmd_opt, stdout=temp_sam)
+        if not returncode == 0:
+            print('Fatal Error!!! returncode is non-zero(%d) for "%s"' % (returncode, cmd_opt))
+            errkey = "Cannot running aligment"
+            for f5k in f5keys:
+                sp_options["Error"][errkey].append(f5data[f5k][3])
+            return
+        temp_fa.close()
+        temp_sam.seek(0)
+        # get content from aligned results
+        align_info = temp_sam.readlines()
+        align_info = [str(align_info[i], 'utf-8').strip() for i in range(len(align_info))]
+        temp_sam.close()
+        align_info2 = get_subset_of_bam(moptions["bam"], f5keys)
 
-    sp_param = defaultdict();
+    sp_param = defaultdict()
     sp_param['f5data'] = f5data
 
     f5align = defaultdict()
-    f5keydict = defaultdict();
+    f5keydict = defaultdict()
     sp_param['ref_info'] = defaultdict()
 
     if moptions['outLevel'] <= myCom.OUTPUT_DEBUG: start_time = time.time();
-    ilid = 0;
+    ilid = 0
     # get alignment records
     while ilid < len(align_info):
         if len(align_info[ilid]) == 0 or align_info[ilid][0] == '@':
             ilid += 1
-            continue;
+            continue
 
-        sp_param['f5status'] = "";
+        sp_param['f5status'] = ""
         sp_param['line'] = align_info[ilid]
         qname = handle_line(moptions, sp_param, f5align)
         if sp_param['f5status'] == "":
-            f5keydict[qname] = True;
+            f5keydict[qname] = True
         ilid += 1
 
     # get unmapped reads
@@ -542,6 +571,28 @@ def mDetect1(moptions, sp_options, f5files):
     if moptions['outLevel'] <= myCom.OUTPUT_DEBUG:
         end_time = time.time();
         print("Analyze & annotate & save consuming time %d" % (end_time - start_time))
+
+
+
+def get_subset_of_bam(bam_file, read_ids):
+    """Get a subset entries of a bam file given some read_ids"""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_txt = os.path.join(temp_dir, "temp.txt")
+        with open(temp_txt, "w") as temp_file:
+            for readid in read_ids:
+                print(readid, file=temp_file)
+        samtools = subprocess.Popen(('samtools', "view", bam_file), stdout=subprocess.PIPE)
+        output = subprocess.check_output(('fgrep', "-w", "-f", temp_txt), stdin=samtools.stdout)
+        sam_list = output.decode().split("\n")[:-1]
+
+    output_sam_list = []
+    for i in range(len(sam_list)):
+        sam_items = sam_list[i].split('\t')
+        read_id = [read_id for read_id in read_ids if read_id in sam_items[0]]
+        if len(read_id) == 1:
+            sam_items[0] = read_id[0]
+        output_sam_list.append("\t".join(sam_items))
+    return output_sam_list
 
 
 #

@@ -96,7 +96,8 @@ def mCommonParam(margs):
 def mDetect(margs):
     # get common parameters
     moptions, ErrorMessage = mCommonParam(margs)
-
+    # bam file
+    moptions['bam'] = margs.bam
     # path for basecall information in fast5 files
     moptions['basecall_1d'] = margs.basecall_1d
     moptions['basecall_2strand'] = margs.basecall_2strand
@@ -174,7 +175,7 @@ def mDetect(margs):
         parser.parse_args(['detect', '--help']);
         sys.exit(1)
 
-    from .scripts import myDetect
+    from scripts import myDetect
     myDetect.mDetect_manager(moptions)
 
 
@@ -183,7 +184,7 @@ def mDetect(margs):
 # Need to get features first.
 #
 def mTrain(margs):
-    from .scripts import myMultiBiRNN
+    from scripts import myMultiBiRNN
 
     # gent common options
     moptions, ErrorMessage = mCommonParam(margs)
@@ -359,6 +360,7 @@ parser_detect.add_argument("--outputlayer", default="", choices=["", "sigmoid"],
                            help="how to put activation function for output layer")
 parser_detect.add_argument("--Base", type=str, default='C', choices=['A', 'C', 'G', 'T'], help="Interest of bases");
 parser_detect.add_argument("--mod_cluster", default=0, choices=[0, 1], help="1: CpG cluster effect; 0: not");
+parser_detect.add_argument("--bam", default=None, help="path to bam file if you want to get alignments from bam file");
 parser_detect.set_defaults(func=mDetect)
 
 # add training options
